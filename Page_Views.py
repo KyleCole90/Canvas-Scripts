@@ -17,7 +17,7 @@ headers = {
 data_set = []
 next_check = 'default'
 
-r = requests.get(domain + "/api/v1/users/9526/page_views?start_time=" + start + "&end_time=" + end + "&per_page=100", headers=headers)
+r = requests.get(domain + "/api/v1/users/" + user_id + "/page_views?start_time=" + start + "&end_time=" + end + "&per_page=100", headers=headers)
 next_ = r.links['next']['url']
 d = r.json()
 data_set.append(d)

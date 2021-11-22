@@ -1,26 +1,32 @@
-# standard libraries
-import json
-import time
-import subprocess
-from os import remove
 import requests
+import json
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+    
+# Change this to match your access token
+sis_errors_token = '<insert token here>'
 
-# API Token
-sis_errors_token = '<set token here>'
-
-#Domain + Account ID
-CANVAS_DOMAIN = '<CANVAS DOMAIN>'
+# Change this to match the domain you use to access Canvas
+CANVAS_DOMAIN = '<yourdomain>.instructure.com'
 ACCOUNT_ID = '1'
 
-# set output folder, leave curly braces e.g.:
-#     /home/user/downloads/{}
-output_path = '/home/user/folder/{}'
+############################ CHANGE FILE SETTINGS #############################
 
-# mail info
-err_date = time.strftime('%m-%d-%Y %H:%M:%S')
-recipient = '<EMAIL ADDRESS>'
-subject = 'Canvas SIS Import Errors {}'.format(err_date)
-body = output_path.format('err_mailbody.txt')
+# must include directory and file -- can customize with variables if desired
+# will be overwritten unless unique name used
+# example: '/home/user1/sis/errors/sis-import-errors-{}.csv' could be used as
+#          output_path.format(recent_imp) to give filename with sis import id
+output_path = '<your path here>'
+
+############################ CHANGE EMAIL SETTINGS ############################
+
+# Set email server and FROM email address (example is O365)
+smtpserver = 'smtp.office365.com:587'
+from_addr = '<email1@address.edu>'
+
+# Add email addresses to list as recipients
+to_list = ['<email2@address.edu>','<email3@address.edu>']
 
 ###############################################################################
 ############# BE EXTREMELY CAREFUL CHANGING ANY INFORMATION BELOW #############
@@ -29,48 +35,90 @@ body = output_path.format('err_mailbody.txt')
 BASE_DOMAIN = 'https://{}/api/v1/{}/'.format(CANVAS_DOMAIN,{})
 BASE_START_URI = BASE_DOMAIN.format('accounts/{}/{}'.format(ACCOUNT_ID,{}))
 IMP_LIST = 'sis_imports{}'
+ERR_LIST = IMP_LIST.format('/{}/errors')
 
 # This headers dictionary is used for almost every request
 headers = {'Authorization':'Bearer {}'.format(sis_errors_token)}
 
-# NOTE: This is the main change -- other script read out each piece of info
-#       while this one simply snags the file, downloads it, 
-
-# define API call for single most recent SIS import
-# NOTE: If you do back-to-back uploads, this may grab the wrong one
 get_sis_imp = BASE_START_URI.format(IMP_LIST.format('?per_page=1'))
+get_err_list = BASE_START_URI.format(ERR_LIST)
 
-# get the most recent SIS import info
+# get the most recent SIS import ID
 fetch_sis = requests.get(get_sis_imp,headers=headers)
-imp_list = json.loads(fetch_sis.text)
-imp_info = imp_list['sis_imports'][0]
-imp_id = imp_info['id']
-imp_status = imp_info['workflow_state']
-print('SIS Import {} completed with a status of: {}.'.format(imp_id, imp_status))
+sis_imp_list = json.loads(fetch_sis.text)
+# specify sis import id below instead of auto-populating for info on one import
+recent_imp = sis_imp_list['sis_imports'][0]['id']
 
-# if the SIS import broke, generate a message
-if (
-    imp_status == 'imported_with_messages' or
-    imp_status == 'failed_with_messages'
-    ):
-    imp_errors = imp_info['errors_attachment']
-    err_file_info = imp_errors['url']
-    err_file_dl = requests.get(err_file_info,headers=headers,stream=True)
-    err_file_local = output_path.format(imp_errors['display_name'])
-    with open(err_file_local, 'w+b') as errfile:
-        errfile.write(err_file_dl.content)
-        errfile.close()
-    with open(body, 'w+') as mailbody:
-        mailbody.write('The last SIS import (ID: {}) resulted in errors.'.format(imp_id))
-        mailbody.close()
-    
-    # send it with mutt
-    err_notify = 'mutt -s "{}" -a {} -- {} < {}'.format(subject, err_file_local, recipient, body)
-    subprocess.call(err_notify, shell=True)
-    
-    # remove local files
-    remove(err_file_local)
-    remove(body)
+# get error list from most recent import
+fetch_err = requests.get(get_err_list.format(recent_imp),headers=headers)
+err_json = json.loads(fetch_err.text)
+err_comps = err_json['sis_import_errors']
+err_count = len(err_comps)
+err_report = []
 
+# build error list if there are any errors in the list
+if err_count > 0:
+    err_summary = '''The most recent SIS Import (ID: {})
+    resulted in {} errors. Locate {} for more information.\n'''.format(
+        recent_imp,err_count,output_path)
+    # CSV output headers
+    err_headers = 'error_file,error_row,error_message\n'
+    # EMAIL body
+    msg_body = '<p>{}</p>'.format(err_summary)
+    
+    print(err_summary)
+
+    # build a row or paragraph for each error, write or append it
+    err_index = 0
+    for error in err_comps:
+        # building CSV row
+        err_row = ('{},{},{}'.format(err_comps[err_index]['file'],
+                                        str(err_comps[err_index]['row']),
+                                        '"{}"'.format(
+                                            err_comps[err_index]['message'])
+                                        )
+                  )
+        # building EMAIL message
+        msg_body += '<p>{}</p>'.format(err_row.replace(',','<br />'))
+        err_report.append(err_row)
+        err_index += 1
+    
+################################# CSV OUTPUT ##################################
+    # write the CSV file specified in output path above    
+    with open(output_path, 'w') as err_file:
+        err_file.write(err_headers)
+        
+        err_index = 0
+        for row in err_report:
+            err_file.write(err_report[err_index] + '\n')
+            err_index += 1
+    # end CSV
+    
+################################ EMAIL OUTPUT #################################
+    # build and send the email as high priority
+    # Create MIME object
+    msg = MIMEMultipart()
+    msg['From'] = from_addr
+    msg['To'] = ', '.join(map(str, to_list))
+    msg['X-Priority'] = '2'
+    
+    # Edit these if necessary to customize subject and body of email
+    msg['Subject'] = 'SIS Import Errors Alert'
+    
+    # Attach body message as HTML, turn entire email into MIME string
+    msg.attach(MIMEText(msg_body, 'html'))
+    
+    # Setup email server for secure login
+    server = smtplib.SMTP(smtpserver)
+    server.starttls()
+    
+    # Pass credentials to server, send email, and close connection
+    # Use app password/token if possible
+    server.login('<email username>','<email password>')
+    server.send_message(msg)
+    server.quit()
+    # end EMAIL
+        
 else:
-    print('No errors detected...')
+    print('''The most recent SIS Import (ID: {})
+          resulted in zero errors.'''.format(recent_imp))

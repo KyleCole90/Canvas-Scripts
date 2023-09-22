@@ -10,8 +10,6 @@ file_path = ""  ### Path to where you want the PDF saved
 
 ########################## Don't edit below ##########################
 
-courses_reader = open(courses_csv, encoding="utf-8-sig")
-courses = csv.reader(courses_reader)
 
 # Open the CSV file containing course data for reading
 courses_reader = open(courses_csv, encoding="utf-8-sig")
